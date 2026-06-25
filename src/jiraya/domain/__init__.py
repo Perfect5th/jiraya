@@ -1,0 +1,63 @@
+"""jiraya domain layer — pure business model, no external dependencies."""
+
+from __future__ import annotations
+
+from .events import (
+    ActivityLogged,
+    DomainEvent,
+    MetricsUpdated,
+    PollCycleCompleted,
+    PollCycleStarted,
+    TicketClassified,
+    TicketEscalated,
+    TicketRouted,
+    TicketTransitioned,
+    TicketTriaged,
+    TicketsFetched,
+)
+from .models import (
+    ActivityLevel,
+    AgentActivity,
+    Classification,
+    InboxEntry,
+    InboxStatus,
+    Priority,
+    Ticket,
+    TicketCategory,
+    TicketStatus,
+    TRIAGEABLE_STATUSES,
+    TriageAction,
+    TriageMetrics,
+    TriageOutcome,
+    ValidationResult,
+    utcnow,
+)
+
+__all__ = [
+    "ActivityLevel",
+    "AgentActivity",
+    "Classification",
+    "InboxEntry",
+    "InboxStatus",
+    "Priority",
+    "Ticket",
+    "TicketCategory",
+    "TicketStatus",
+    "TRIAGEABLE_STATUSES",
+    "TriageAction",
+    "TriageMetrics",
+    "TriageOutcome",
+    "ValidationResult",
+    "utcnow",
+    "ActivityLogged",
+    "DomainEvent",
+    "MetricsUpdated",
+    "PollCycleCompleted",
+    "PollCycleStarted",
+    "TicketClassified",
+    "TicketEscalated",
+    "TicketRouted",
+    "TicketTransitioned",
+    "TicketTriaged",
+    "TicketsFetched",
+]
