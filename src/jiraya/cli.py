@@ -71,6 +71,10 @@ def _config_from_args(args: argparse.Namespace) -> JirayaConfig:
         copilot_model=args.copilot_model,
         copilot_fallback_to_keyword=args.copilot_fallback,
         dry_run=dry_run,
+        repo_registry_path=args.repo_registry,
+        learned_rules_path=args.learned_rules,
+        require_repo=not args.no_require_repo,
+        provision=args.provision,
         jira=jira,
     )
 
@@ -87,6 +91,17 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                         help="Model for the Copilot CLI classifier.")
     parser.add_argument("--copilot-fallback", action="store_true",
                         help="Fall back to the keyword classifier if Copilot fails.")
+    parser.add_argument("--repo-registry", default=None,
+                        help="Path to a YAML repo registry (project->repo catalog).")
+    parser.add_argument("--learned-rules", default=None,
+                        help="Path to persist repo-resolution rules learned from "
+                             "inbox corrections.")
+    parser.add_argument("--no-require-repo", action="store_true",
+                        help="Do not escalate tickets whose repository cannot be "
+                             "resolved (skip the repo confidence gate).")
+    parser.add_argument("--provision", action="store_true",
+                        help="git clone resolved repos into local workspaces so the "
+                             "worker agent can start (off by default; never in dry-run).")
     writes = parser.add_mutually_exclusive_group()
     writes.add_argument("--dry-run", action="store_true",
                         help="Read real Jira items but never write back. This is "

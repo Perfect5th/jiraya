@@ -49,7 +49,7 @@ class StubAgent:
     def handles(self, category):
         return category is self._category
 
-    def validate(self, ticket, classification):
+    def validate(self, ticket, classification, resolution=None):
         return self._result
 
 

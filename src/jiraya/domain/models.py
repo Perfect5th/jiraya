@@ -106,6 +106,41 @@ class Classification:
 
 
 @dataclass(frozen=True, slots=True)
+class RepoRef:
+    """A concrete pointer to where a ticket's work lives."""
+
+    key: str                 # logical repo id, e.g. "canonical/landscape"
+    clone_url: str           # git clone URL
+    path: str = ""           # sub-path/module within the repo (optional)
+    default_branch: str = "" # optional starting branch
+
+    def __str__(self) -> str:
+        return f"{self.key}{('/' + self.path) if self.path else ''}"
+
+
+@dataclass(frozen=True, slots=True)
+class RepoResolution:
+    """Result of resolving which repository a ticket belongs to.
+
+    Mirrors :class:`Classification`: a best guess with a confidence and the
+    adapter that produced it, gated by the same confidence convention.
+    """
+
+    repo: RepoRef | None
+    confidence: float
+    rationale: str = ""
+    source: str = "unknown"
+
+    @property
+    def is_confident(self) -> bool:
+        return self.repo is not None and self.confidence >= 0.6
+
+    @classmethod
+    def unresolved(cls, rationale: str, source: str = "unknown") -> "RepoResolution":
+        return cls(repo=None, confidence=0.0, rationale=rationale, source=source)
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationResult:
     """Outcome of a worker agent's initial validation of a ticket."""
 
@@ -125,6 +160,17 @@ class TriageAction(str, Enum):
         return self.value
 
 
+class EscalationStage(str, Enum):
+    """Which harness step surfaced a ticket for human review."""
+
+    CLASSIFICATION = "classification"
+    REPOSITORY = "repository"
+    VALIDATION = "validation"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 @dataclass(frozen=True, slots=True)
 class TriageOutcome:
     """A complete record of how one ticket was triaged."""
@@ -134,12 +180,15 @@ class TriageOutcome:
     classification: Classification
     agent: str | None = None
     validation: ValidationResult | None = None
+    resolution: RepoResolution | None = None
+    workspace: str = ""  # local clone path when a workspace was provisioned
     note: str = ""
     at: datetime = field(default_factory=utcnow)
 
     @property
     def escalated(self) -> bool:
         return self.action is TriageAction.ESCALATED
+
 
 
 class InboxStatus(str, Enum):
@@ -166,10 +215,16 @@ class InboxEntry:
     agent: str | None = None
     rationale: str = ""
     details: tuple[str, ...] = ()
+    stage: EscalationStage = EscalationStage.CLASSIFICATION
+    repo: RepoRef | None = None  # best-guess repo when known (esp. repository stage)
     status: InboxStatus = InboxStatus.OPEN
     created_at: datetime = field(default_factory=utcnow)
     resolved_at: datetime | None = None
     resolution: str = ""
+
+    @property
+    def needs_repo(self) -> bool:
+        return self.stage is EscalationStage.REPOSITORY
 
     def resolved(self, resolution: str, *, now: datetime | None = None) -> "InboxEntry":
         return replace(
@@ -190,8 +245,10 @@ class InboxResponse:
 
     entry: InboxEntry
     note: str = ""
+    repo: "RepoRef | None" = None
     commented: bool = False
     comment_id: str | None = None
+    taught: bool = False  # whether a repo rule was learned from this response
     retriaged: bool = False
     outcome: "TriageOutcome | None" = None
 

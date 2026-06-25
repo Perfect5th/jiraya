@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from ..domain import InboxResponse, Ticket, TriageMetrics, TriageOutcome
+from ..domain import InboxResponse, RepoRef, Ticket, TriageMetrics, TriageOutcome
 
 
 @runtime_checkable
@@ -20,6 +20,7 @@ class TriageService(Protocol):
         entry_id: str,
         note: str,
         *,
+        repo: RepoRef | None = None,
         post_comment: bool = False,
         rerun: bool = False,
     ) -> InboxResponse: ...

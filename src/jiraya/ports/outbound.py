@@ -12,6 +12,8 @@ from ..domain import (
     Classification,
     DomainEvent,
     InboxEntry,
+    RepoRef,
+    RepoResolution,
     Ticket,
     TicketCategory,
     TicketStatus,
@@ -48,6 +50,48 @@ class Classifier(Protocol):
 
 
 @runtime_checkable
+class RepoResolver(Protocol):
+    """Resolve which repository a ticket belongs to (clone_url + path).
+
+    Mirrors :class:`Classifier`: the harness calls this right after
+    classification, and the result is confidence-gated. ``hint`` carries a
+    human note from the dashboard "respond" action.
+    """
+
+    def resolve(
+        self,
+        ticket: Ticket,
+        classification: Classification,
+        hint: str | None = None,
+    ) -> RepoResolution: ...
+
+
+@runtime_checkable
+class LearnedRulesStore(Protocol):
+    """Persistence for repo-resolution rules learned from inbox corrections."""
+
+    def learn(self, *, project: str, repo: RepoRef, tokens: tuple[str, ...] = ()) -> None:
+        """Record that tickets in ``project`` (or matching ``tokens``) map to ``repo``."""
+
+    def lookup(self, *, project: str, text: str) -> tuple[RepoRef, float, str] | None:
+        """Return (repo, confidence, rationale) for the best learned match, if any."""
+
+    def rules(self) -> list[dict]:
+        """Return all learned rules (for inspection / persistence)."""
+
+
+@runtime_checkable
+class WorkspaceProvisioner(Protocol):
+    """Provision a local working copy for a resolved repo (``git clone`` + path).
+
+    Returns the local workspace path. Implementations may be no-ops (dry-run)
+    that only report the intended path without cloning.
+    """
+
+    def provision(self, repo: RepoRef, ticket_key: str) -> str: ...
+
+
+@runtime_checkable
 class WorkerAgent(Protocol):
     """A specialized agent that validates and works a category of ticket."""
 
@@ -55,7 +99,13 @@ class WorkerAgent(Protocol):
 
     def handles(self, category: TicketCategory) -> bool: ...
 
-    def validate(self, ticket: Ticket, classification: Classification) -> ValidationResult: ...
+    def validate(
+        self,
+        ticket: Ticket,
+        classification: Classification,
+        resolution: RepoResolution | None = None,
+    ) -> ValidationResult: ...
+
 
 
 @runtime_checkable

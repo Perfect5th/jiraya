@@ -22,6 +22,9 @@ _DEMO_SPECS = [
     ("WEB", "Export breaks for large reports", "bug", "Bug",
      "The CSV export fails with a 500 error for reports over 10k rows. "
      "Stack trace attached. Steps: open a large report, click export."),
+    ("API", "Timeout calling the orders endpoint", "bug", "Bug",
+     "Steps: POST /v2/orders; expected 200; actual 504 gateway timeout. "
+     "Stack trace in the gateway logs."),
 ]
 
 _counter = itertools.count(500)

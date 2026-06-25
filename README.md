@@ -27,19 +27,25 @@ logic is fully decoupled from Jira, the LLM, and the front-end:
    │   • InMemory (seed/offline)   │               │   • Keyword (deterministic) │
    │   • JiraRest (httpx)          │               │   • CopilotCli (LLM)        │
    ├───────────────────────────────┤               ├─────────────────────────────┤
+   │  RepoResolver                 │               │  WorkspaceProvisioner       │
+   │   • Registry (YAML)           │               │   • Noop (dry-run)          │
+   │   • LearnedRules · Keyword    │               │   • Git (clone)             │
+   ├───────────────────────────────┤               ├─────────────────────────────┤
    │  WorkerAgent: Bug / Feature / Documentation    │  InboxRepository · EventBus │
    └────────────────────────────────────────────────┴─────────────────────────────┘
                               driven adapters
 ```
 
-- **`domain/`** — pure entities (`Ticket`, `Classification`, `InboxEntry`,
-  `TriageMetrics`, …) and domain events. No external dependencies.
+- **`domain/`** — pure entities (`Ticket`, `Classification`, `RepoResolution`,
+  `InboxEntry`, `TriageMetrics`, …) and domain events. No external dependencies.
 - **`ports/`** — inbound (`TriageService`) and outbound (`TicketSource`,
-  `Classifier`, `WorkerAgent`, `InboxRepository`, `EventBus`) protocols.
-- **`application/`** — the harness: `TriageService` (classify → route → validate
-  → transition / escalate), `AgentRouter`, and the scheduled `TriagePoller`.
+  `Classifier`, `RepoResolver`, `LearnedRulesStore`, `WorkspaceProvisioner`,
+  `WorkerAgent`, `InboxRepository`, `EventBus`) protocols.
+- **`application/`** — the harness: `TriageService` (classify → resolve repo →
+  route → validate → transition / escalate), `AgentRouter`, `TriagePoller`.
 - **`adapters/`** — `inmemory` (default, offline), `jira` (real REST API),
-  `classifier` (keyword + Copilot CLI), `agents` (worker agents).
+  `classifier` (keyword + Copilot CLI), `resolver` (registry + learned + keyword),
+  `workspace` (noop + git), `agents` (worker agents).
 - **`tui/`** — the Textual dashboard (a driving adapter).
 - **`composition.py`** — the composition root that wires everything together.
 
@@ -48,11 +54,55 @@ logic is fully decoupled from Jira, the LLM, and the front-end:
 1. **Poll** — `TriagePoller` fetches `Untriaged` / `To Do` tickets on an interval.
 2. **Classify** — the `Classifier` agent labels each ticket (Bug / Feature
    Request / Documentation / Unknown) with a confidence score.
-3. **Route & validate** — `AgentRouter` hands the ticket to the matching worker
-   agent, which performs initial validation (is the bug reproducible? is the
-   feature a duplicate?).
-4. **Transition or escalate** — actionable tickets are moved to **In Progress**;
+3. **Resolve repo** — the `RepoResolver` maps the ticket to a repository
+   (`clone_url` + path) with a confidence score. Low confidence is escalated
+   through the inbox so a human can supply the repo (which also *teaches* the
+   resolver).
+4. **Route & validate** — `AgentRouter` hands the ticket (and its resolved repo)
+   to the matching worker agent, which performs initial validation (is the bug
+   reproducible? is the feature a duplicate?).
+5. **Transition & start** — actionable tickets are moved to **In Progress** and a
+   workspace is provisioned (`git clone`) so the worker agent can start;
    low-confidence or ambiguous tickets are surfaced to the dashboard inbox.
+
+## Repository resolution
+
+After classification the harness resolves **which repo** a ticket belongs to,
+mirroring how the classifier is structured: a `RepoResolver` port with layered
+adapters and a confidence gate.
+
+- **Registry** (`RegistryRepoResolver`) — an authoritative project→repo mapping
+  loaded from a YAML catalog (`--repo-registry`, see
+  [`examples/repo_registry.yaml`](examples/repo_registry.yaml)). **Seed it from
+  Jira dev-status / commit-mining**: the issue→commit→repo links Jira already
+  records give you an empirical mapping (and an eval set) on day one.
+- **Learned rules** (`LearnedRulesRepoResolver`) — mappings taught by inbox
+  corrections; persisted with `--learned-rules <path>`. Each correction improves
+  precision over time.
+- **Keyword / code-tokens** (`KeywordRepoResolver`) — a deterministic matcher for
+  the residual (module names, path-like tokens, repo-name fragments). This is the
+  seam where code-search + an LLM would layer in next.
+
+These are combined by a `CompositeRepoResolver` (learned → registry → tokens);
+the first *confident* hit wins. If none is confident the ticket is escalated at
+the **repository** stage. In the dashboard, press `d` and paste a **clone URL**:
+that unblocks the ticket *and* teaches the resolver, so future tickets in the
+same project resolve automatically.
+
+When a ticket transitions, a `WorkspaceProvisioner` hands the worker agent a
+local checkout. The default is a no-op that only reports the intended path;
+`--provision` performs a real `git clone` (never in dry-run).
+
+```bash
+# Resolve against your registry, persist what you teach, and clone workspaces
+uv run jiraya run --once --apply \
+  --repo-registry examples/repo_registry.yaml \
+  --learned-rules ~/.config/jiraya/learned-rules.yaml \
+  --provision
+
+# Don't escalate on unresolved repos (skip the repo confidence gate)
+uv run jiraya run --once --no-require-repo
+```
 
 ## Install
 

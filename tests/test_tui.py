@@ -3,7 +3,7 @@ from __future__ import annotations
 from textual.widgets import Button, DataTable, Input, RichLog, Static
 
 from jiraya.composition import JirayaConfig
-from jiraya.domain import InboxStatus
+from jiraya.domain import InboxStatus, Priority, Ticket
 from jiraya.tui import JirayaApp
 from jiraya.tui.detail import InboxDetailScreen
 
@@ -103,3 +103,58 @@ async def test_inbox_detail_modal_rerun_resolves_entry(wait_for):
             lambda: app._system.inbox.get(entry_id).status is InboxStatus.RESOLVED,
         )
         assert ok
+
+
+def _make_app_with_repo_gap() -> JirayaApp:
+    app = JirayaApp(config=JirayaConfig(source="memory"), poll_interval=10_000)
+    # Inject an uncovered-project ticket so a repository-stage exception appears.
+    app._system.source.add(Ticket(
+        key="API-77", project="API", summary="Timeout on the orders endpoint",
+        description="Steps: POST /v2/orders; expected 200; actual 504. Stack trace attached.",
+        reporter="r", priority=Priority.HIGH, issue_type="Bug",
+    ))
+    return app
+
+
+async def test_tickets_table_shows_resolved_repo(wait_for):
+    app = _make_app()
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: app._system.service.metrics.processed == 8)
+        tickets = app.query_one("#tickets", DataTable)
+        # The Repo column is populated for transitioned tickets.
+        repo_cell = str(tickets.get_cell("PROJ-101", app._cols["repo"]))
+        assert "acme/proj-service" in repo_cell
+
+
+async def test_respond_with_repo_unblocks_repository_stage(wait_for):
+    app = _make_app_with_repo_gap()
+    async with app.run_test() as pilot:
+        await wait_for(
+            pilot,
+            lambda: any(e.ticket_key == "API-77" and e.needs_repo
+                        for e in app._system.inbox.open_entries()),
+        )
+        entry = next(e for e in app._system.inbox.open_entries()
+                     if e.ticket_key == "API-77")
+
+        # Open the detail modal for that specific entry and supply a repo.
+        app.push_screen(
+            InboxDetailScreen(entry, dry_run=False),
+            lambda result: app._on_detail_result(entry.id, result),
+        )
+        await pilot.pause()
+        app.screen.query_one("#repo-url", Input).value = "https://github.com/acme/api.git"
+        app.screen.query_one("#both", Button).press()
+
+        ok = await wait_for(
+            pilot,
+            lambda: app._system.inbox.get(entry.id).status is InboxStatus.RESOLVED,
+        )
+        assert ok
+        # The repo mapping was learned: a new API ticket now resolves.
+        from jiraya.domain import Classification, TicketCategory
+        res = app._system.resolver.resolve(
+            app._system.source.get("API-77"),
+            Classification(TicketCategory.BUG, "API", 0.9),
+        )
+        assert res.is_confident and res.repo.key == "acme/api"

@@ -10,8 +10,11 @@ from .outbound import (
     EventHandler,
     EventPublisher,
     InboxRepository,
+    LearnedRulesStore,
+    RepoResolver,
     TicketSource,
     WorkerAgent,
+    WorkspaceProvisioner,
 )
 
 __all__ = [
@@ -22,6 +25,9 @@ __all__ = [
     "EventHandler",
     "EventPublisher",
     "InboxRepository",
+    "LearnedRulesStore",
+    "RepoResolver",
     "TicketSource",
     "WorkerAgent",
+    "WorkspaceProvisioner",
 ]

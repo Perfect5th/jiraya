@@ -53,6 +53,12 @@ class InboxDetailScreen(ModalScreen[dict | None]):
             yield Static(self._detail_text(), id="detail")
             yield Label("Add a note (sent as a Jira comment and/or used as a triage hint):")
             yield Input(placeholder="e.g. This is actually a bug — repro: …", id="note")
+            yield Label("Repo (clone URL) — supply to unblock and teach the resolver:")
+            yield Input(
+                placeholder="e.g. https://github.com/acme/service.git",
+                id="repo-url",
+            )
+            yield Input(placeholder="sub-path within the repo (optional)", id="repo-path")
             if self._dry_run:
                 yield Static(
                     "Dry-run: comments are not posted to Jira; re-triage performs no writes.",
@@ -66,15 +72,21 @@ class InboxDetailScreen(ModalScreen[dict | None]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#note", Input).focus()
+        # Repo-stage exceptions are unblocked by supplying a repo, so focus that.
+        target = "repo-url" if self._entry.needs_repo else "note"
+        self.query_one(f"#{target}", Input).focus()
 
     def _detail_text(self) -> Text:
         e = self._entry
         t = Text()
+        t.append("Stage      : ")
+        t.append(f"{e.stage}\n", style="bold")
         t.append("Category   : ")
         t.append(f"{e.category}\n", style="bold")
         t.append(f"Confidence : {e.confidence:.0%}\n")
         t.append(f"Agent      : {e.agent or '—'}\n")
+        if e.repo is not None:
+            t.append(f"Repo guess : {e.repo} ({e.repo.clone_url})\n")
         t.append(f"Status     : {e.status}\n")
         t.append("Reason     : ")
         t.append(f"{e.reason}\n")
@@ -91,8 +103,12 @@ class InboxDetailScreen(ModalScreen[dict | None]):
         if event.button.id == "cancel":
             self.dismiss(None)
             return
-        note = self.query_one("#note", Input).value.strip()
-        self.dismiss({"action": event.button.id, "note": note})
+        self.dismiss({
+            "action": event.button.id,
+            "note": self.query_one("#note", Input).value.strip(),
+            "repo_url": self.query_one("#repo-url", Input).value.strip(),
+            "repo_path": self.query_one("#repo-path", Input).value.strip(),
+        })
 
     def action_cancel(self) -> None:
         self.dismiss(None)

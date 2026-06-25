@@ -14,6 +14,7 @@ from .models import (
     AgentActivity,
     Classification,
     InboxEntry,
+    RepoResolution,
     Ticket,
     TicketStatus,
     TriageMetrics,
@@ -47,6 +48,12 @@ class TicketsFetched(DomainEvent):
 class TicketClassified(DomainEvent):
     ticket: Ticket | None = None
     classification: Classification | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TicketRepoResolved(DomainEvent):
+    ticket_key: str = ""
+    resolution: "RepoResolution | None" = None
 
 
 @dataclass(frozen=True, slots=True)

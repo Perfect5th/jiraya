@@ -7,7 +7,13 @@ either declares the ticket actionable or asks for a human via ``needs_human``.
 
 from __future__ import annotations
 
-from ...domain import Classification, Ticket, TicketCategory, ValidationResult
+from ...domain import (
+    Classification,
+    RepoResolution,
+    Ticket,
+    TicketCategory,
+    ValidationResult,
+)
 from ...ports import WorkerAgent
 
 _REPRO_SIGNALS = (
@@ -24,7 +30,12 @@ class BugAgent(WorkerAgent):
     def handles(self, category: TicketCategory) -> bool:
         return category is TicketCategory.BUG
 
-    def validate(self, ticket: Ticket, classification: Classification) -> ValidationResult:
+    def validate(
+        self,
+        ticket: Ticket,
+        classification: Classification,
+        resolution: RepoResolution | None = None,
+    ) -> ValidationResult:
         text = f"{ticket.summary}\n{ticket.description}".lower()
         has_repro = any(sig in text for sig in _REPRO_SIGNALS)
         detailed = len(ticket.description.strip()) >= 40
@@ -54,7 +65,12 @@ class FeatureAgent(WorkerAgent):
     def handles(self, category: TicketCategory) -> bool:
         return category is TicketCategory.FEATURE_REQUEST
 
-    def validate(self, ticket: Ticket, classification: Classification) -> ValidationResult:
+    def validate(
+        self,
+        ticket: Ticket,
+        classification: Classification,
+        resolution: RepoResolution | None = None,
+    ) -> ValidationResult:
         text = f"{ticket.summary}\n{ticket.description}".lower()
         labels = {label.lower() for label in ticket.labels}
         looks_duplicate = "duplicate" in labels or "duplicate" in text
@@ -84,7 +100,12 @@ class DocumentationAgent(WorkerAgent):
     def handles(self, category: TicketCategory) -> bool:
         return category is TicketCategory.DOCUMENTATION
 
-    def validate(self, ticket: Ticket, classification: Classification) -> ValidationResult:
+    def validate(
+        self,
+        ticket: Ticket,
+        classification: Classification,
+        resolution: RepoResolution | None = None,
+    ) -> ValidationResult:
         text = f"{ticket.summary}\n{ticket.description}".lower()
         has_target = any(t in text for t in self._TARGETS)
         if has_target and len(ticket.description.strip()) >= 25:

@@ -91,6 +91,7 @@ def _args(**overrides):
     ns = argparse.Namespace(
         classifier="keyword", source="auto", interval=10.0,
         copilot_model=None, copilot_fallback=False, dry_run=False, apply=False,
+        repo_registry=None, learned_rules=None, no_require_repo=False, provision=False,
     )
     for k, v in overrides.items():
         setattr(ns, k, v)

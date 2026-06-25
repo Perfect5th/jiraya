@@ -19,9 +19,28 @@ from .adapters.inmemory import (
     InMemoryTicketSource,
 )
 from .adapters.jira import JiraRestTicketSource
+from .adapters.resolver import (
+    CompositeRepoResolver,
+    InMemoryLearnedRulesStore,
+    FileLearnedRulesStore,
+    KeywordRepoResolver,
+    LearnedRulesRepoResolver,
+    RegistryRepoResolver,
+    default_catalog,
+    load_catalog,
+)
+from .adapters.workspace import GitWorkspaceProvisioner, NoopWorkspaceProvisioner
 from .application import AgentRouter, TriagePoller, TriageService
 from .domain import ActivityLevel, ActivityLogged, AgentActivity
-from .ports import Classifier, EventBus, InboxRepository, TicketSource
+from .ports import (
+    Classifier,
+    EventBus,
+    InboxRepository,
+    LearnedRulesStore,
+    RepoResolver,
+    TicketSource,
+    WorkspaceProvisioner,
+)
 
 _DEFAULT_JQL = 'status in ("To Do", "Untriaged") ORDER BY created ASC'
 
@@ -63,6 +82,10 @@ class JirayaConfig:
     copilot_model: str | None = None
     copilot_fallback_to_keyword: bool = False
     dry_run: bool = False
+    repo_registry_path: str | None = None   # YAML repo catalog
+    learned_rules_path: str | None = None    # where learned repo rules persist
+    require_repo: bool = True                 # gate on confident repo resolution
+    provision: bool = False                   # actually `git clone` workspaces
     jira: JiraConfig = field(default_factory=JiraConfig)
 
     def resolve_source(self) -> str:
@@ -82,6 +105,9 @@ class JirayaSystem:
     router: AgentRouter
     service: TriageService
     poller: TriagePoller
+    resolver: RepoResolver
+    learned_store: LearnedRulesStore
+    provisioner: WorkspaceProvisioner
     source_mode: str = "memory"
     dry_run: bool = False
 
@@ -93,6 +119,35 @@ def build_classifier(config: JirayaConfig) -> Classifier:
     if config.classifier == "keyword":
         return KeywordClassifier()
     raise ValueError(f"Unknown classifier: {config.classifier!r}")
+
+
+def build_learned_store(config: JirayaConfig) -> LearnedRulesStore:
+    if config.learned_rules_path:
+        return FileLearnedRulesStore(config.learned_rules_path)
+    return InMemoryLearnedRulesStore()
+
+
+def build_resolver(
+    config: JirayaConfig, learned_store: LearnedRulesStore
+) -> RepoResolver:
+    catalog = (
+        load_catalog(config.repo_registry_path)
+        if config.repo_registry_path
+        else default_catalog()
+    )
+    # Layered strategy: learned rules and the project registry give the
+    # high-confidence hits; the keyword/code-token matcher handles the residual.
+    return CompositeRepoResolver([
+        LearnedRulesRepoResolver(learned_store),
+        RegistryRepoResolver(catalog),
+        KeywordRepoResolver(catalog),
+    ])
+
+
+def build_provisioner(config: JirayaConfig, *, dry_run: bool) -> WorkspaceProvisioner:
+    if config.provision and not dry_run:
+        return GitWorkspaceProvisioner()
+    return NoopWorkspaceProvisioner()
 
 
 def build_source(config: JirayaConfig) -> TicketSource:
@@ -124,6 +179,8 @@ def build_system(config: JirayaConfig | None = None) -> JirayaSystem:
     inbox = InMemoryInboxRepository()
     classifier = build_classifier(config)
     router = AgentRouter(default_agents())
+    learned_store = build_learned_store(config)
+    resolver = build_resolver(config, learned_store)
 
     source: TicketSource = build_source(config)
     # Dry-run only makes sense against a real, mutating backend.
@@ -134,6 +191,7 @@ def build_system(config: JirayaConfig | None = None) -> JirayaSystem:
             on_transition=_make_dry_run_logger(bus, "Would transition to {0}"),
             on_comment=_make_dry_run_logger(bus, "Would post comment"),
         )
+    provisioner = build_provisioner(config, dry_run=dry_run)
 
     service = TriageService(
         ticket_source=source,
@@ -141,7 +199,11 @@ def build_system(config: JirayaConfig | None = None) -> JirayaSystem:
         router=router,
         inbox=inbox,
         events=bus,
+        resolver=resolver,
+        provisioner=provisioner,
+        learned_store=learned_store,
         confidence_threshold=config.confidence_threshold,
+        require_repo=config.require_repo,
     )
     poller = TriagePoller(
         ticket_source=source,
@@ -157,6 +219,9 @@ def build_system(config: JirayaConfig | None = None) -> JirayaSystem:
         router=router,
         service=service,
         poller=poller,
+        resolver=resolver,
+        learned_store=learned_store,
+        provisioner=provisioner,
         source_mode=mode,
         dry_run=dry_run,
     )

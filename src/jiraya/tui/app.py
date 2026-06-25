@@ -29,9 +29,11 @@ from ..domain import (
     InboxStatus,
     MetricsUpdated,
     PollCycleStarted,
+    RepoRef,
     TicketCategory,
     TicketClassified,
     TicketEscalated,
+    TicketRepoResolved,
     TicketRouted,
     TicketStatus,
     TicketTransitioned,
@@ -79,6 +81,17 @@ _LEVEL_GLYPH = {
     ActivityLevel.WARNING: "⚠",
     ActivityLevel.ERROR: "✗",
 }
+
+
+def _repo_key_from_url(url: str) -> str:
+    """Derive an "org/repo" key from a clone URL (best effort)."""
+    cleaned = url.rstrip("/")
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    # Strip scheme / host, keep the last two path segments.
+    tail = cleaned.replace(":", "/").split("/")
+    parts = [p for p in tail if p][-2:]
+    return "/".join(parts) if parts else cleaned
 
 
 class JirayaApp(App):
@@ -173,8 +186,8 @@ class JirayaApp(App):
         self._loop = asyncio.get_running_loop()
 
         tickets = self.query_one("#tickets", DataTable)
-        cols = tickets.add_columns("Key", "Project", "Type", "Category", "Status", "Agent", "Outcome")
-        self._cols = dict(zip(["key", "project", "type", "category", "status", "agent", "outcome"], cols))
+        cols = tickets.add_columns("Key", "Type", "Category", "Status", "Agent", "Repo", "Outcome")
+        self._cols = dict(zip(["key", "type", "category", "status", "agent", "repo", "outcome"], cols))
 
         inbox = self.query_one("#inbox", DataTable)
         icols = inbox.add_columns("Ticket", "Category", "Agent", "Reason")
@@ -235,6 +248,11 @@ class JirayaApp(App):
                 self._ensure_row(t.key, t.project, t.status, t.issue_type)
                 self._update(t.key, "category",
                              Text(str(c.category), style=_CATEGORY_STYLE[c.category]))
+        elif isinstance(event, TicketRepoResolved):
+            res = event.resolution
+            if res is not None and res.repo is not None:
+                style = _C_FEATURE if res.is_confident else _C_UNKNOWN
+                self._update(event.ticket_key, "repo", Text(res.repo.key, style=style))
         elif isinstance(event, TicketRouted):
             self._update(event.ticket_key, "agent", event.agent)
         elif isinstance(event, TicketTransitioned):
@@ -268,11 +286,11 @@ class JirayaApp(App):
         table = self.query_one("#tickets", DataTable)
         table.add_row(
             Text(key, style="bold"),
-            project,
             issue_type or "—",
             Text("…", style=_C_DIM),
             Text(str(status), style=_STATUS_STYLE.get(status, "white")),
             "—",
+            Text("…", style=_C_DIM),
             Text("queued", style=_C_DIM),
             key=key,
         )
@@ -406,22 +424,40 @@ class JirayaApp(App):
         if flags is None:
             return
         post_comment, rerun = flags
-        if (post_comment and not note):
+
+        repo: RepoRef | None = None
+        repo_url = (result.get("repo_url") or "").strip()
+        if repo_url:
+            repo = RepoRef(
+                key=_repo_key_from_url(repo_url),
+                clone_url=repo_url,
+                path=(result.get("repo_path") or "").strip(),
+            )
+
+        if post_comment and not note and repo is None:
             self._log_line("Enter a note to post as a comment.", ActivityLevel.WARNING)
             return
+        if not (note or repo or rerun):
+            return
         self.run_worker(
-            self._respond(entry_id, note, post_comment, rerun),
+            self._respond(entry_id, note, repo, post_comment, rerun),
             name=f"respond-{entry_id}",
             exclusive=False,
         )
 
     async def _respond(
-        self, entry_id: str, note: str, post_comment: bool, rerun: bool
+        self,
+        entry_id: str,
+        note: str,
+        repo: RepoRef | None,
+        post_comment: bool,
+        rerun: bool,
     ) -> None:
         try:
             response = await asyncio.to_thread(
-                self._system.service.respond_to_inbox,
-                entry_id, note, post_comment=post_comment, rerun=rerun,
+                lambda: self._system.service.respond_to_inbox(
+                    entry_id, note, repo=repo, post_comment=post_comment, rerun=rerun,
+                )
             )
         except Exception as exc:  # noqa: BLE001 - surface, don't crash the UI
             self._log_line(f"Respond failed: {exc}", ActivityLevel.ERROR)

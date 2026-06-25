@@ -1,0 +1,33 @@
+# jiraya repo registry — the empirical ticket -> repository mapping.
+#
+# Seed this from Jira dev-status / commit-mining: the issue -> commit -> repo
+# links Jira already records give you one authoritative row per project on day
+# one (plus an eval set). Hand-curate from there. Pass with:
+#
+#   uv run jiraya tui --repo-registry examples/repo_registry.yaml
+#
+# Each entry maps a repository to the Jira projects that live in it and the
+# prose/code-token keywords used to place tickets the project key can't.
+
+repos:
+  - key: canonical/landscape
+    clone_url: https://github.com/canonical/landscape.git
+    path: ""                 # optional sub-path/module within the repo
+    default_branch: main      # optional
+    projects: [LNDENG, LANDSCAPE]
+    keywords: [landscape, reprepro, repo mirror, message-system, message system]
+
+  - key: acme/proj-service
+    clone_url: https://github.com/acme/proj-service.git
+    projects: [PROJ]
+    keywords: [login, checkout, profile]
+
+  - key: acme/web
+    clone_url: https://github.com/acme/web.git
+    projects: [WEB]
+    keywords: [dark mode, csv export, report, theme]
+
+  - key: acme/docs
+    clone_url: https://github.com/acme/docs.git
+    projects: [DOC]
+    keywords: [readme, documentation, guide, tutorial]

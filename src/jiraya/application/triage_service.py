@@ -2,8 +2,8 @@ r"""The triage harness — orchestration of the end-to-end workflow.
 
 This is the application core that ties the ports together:
 
-    classify -> route -> validate -> transition  (happy path)
-                                  \-> escalate    (low confidence / needs human)
+    classify -> resolve repo -> route -> validate -> transition  (happy path)
+                                                  \-> escalate    (low confidence)
 
 It depends only on ports, never on concrete adapters, so the same logic runs
 against the in-memory fakes, a real Jira instance, or the Copilot CLI.
@@ -19,13 +19,17 @@ from ..domain import (
     AgentActivity,
     ActivityLogged,
     Classification,
+    EscalationStage,
     InboxEntry,
     InboxResponse,
     MetricsUpdated,
+    RepoRef,
+    RepoResolution,
     Ticket,
     TicketCategory,
     TicketClassified,
     TicketEscalated,
+    TicketRepoResolved,
     TicketRouted,
     TicketStatus,
     TicketTransitioned,
@@ -34,8 +38,23 @@ from ..domain import (
     TriageMetrics,
     TriageOutcome,
 )
-from ..ports import Classifier, EventPublisher, InboxRepository, TicketSource
+from ..ports import (
+    Classifier,
+    EventPublisher,
+    InboxRepository,
+    LearnedRulesStore,
+    RepoResolver,
+    TicketSource,
+    WorkspaceProvisioner,
+)
 from .router import AgentRouter
+
+
+class _NullResolver:
+    """Resolver used when none is configured: never resolves a repo."""
+
+    def resolve(self, ticket, classification, hint=None):  # noqa: ANN001
+        return RepoResolution.unresolved("No repo resolver configured.", source="none")
 
 
 class _NullPublisher:
@@ -56,7 +75,12 @@ class TriageService:
         router: AgentRouter,
         inbox: InboxRepository,
         events: EventPublisher | None = None,
+        resolver: RepoResolver | None = None,
+        provisioner: WorkspaceProvisioner | None = None,
+        learned_store: LearnedRulesStore | None = None,
         confidence_threshold: float = 0.6,
+        resolution_threshold: float = 0.6,
+        require_repo: bool = True,
         id_factory: Callable[[], str] | None = None,
     ) -> None:
         self._source = ticket_source
@@ -64,9 +88,17 @@ class TriageService:
         self._router = router
         self._inbox = inbox
         self._events = events or _NullPublisher()
+        self._resolver = resolver or _NullResolver()
+        self._provisioner = provisioner
+        self._learned = learned_store
         self._threshold = confidence_threshold
+        self._resolution_threshold = resolution_threshold
+        # When no real resolver is configured, don't block tickets on repo
+        # resolution (keeps the resolution step opt-in/back-compatible).
+        self._require_repo = require_repo and not isinstance(self._resolver, _NullResolver)
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex[:8])
         self._metrics = TriageMetrics()
+
 
     # -- public API -----------------------------------------------------------
 
@@ -82,15 +114,17 @@ class TriageService:
         entry_id: str,
         note: str,
         *,
+        repo: RepoRef | None = None,
         post_comment: bool = False,
         rerun: bool = False,
     ) -> InboxResponse:
         """Act on a human's response to a surfaced exception.
 
-        Optionally posts ``note`` as a comment back to the Jira issue and/or
-        re-runs triage for the ticket using ``note`` as an authoritative hint.
-        Re-running resolves the original inbox entry (a fresh one is created if
-        the ticket still cannot be actioned).
+        Optionally posts ``note`` as a comment back to the Jira issue, teaches a
+        ``repo`` mapping (which both unblocks this ticket and improves future
+        resolution), and/or re-runs triage using ``note`` as an authoritative
+        hint. Re-running resolves the original inbox entry (a fresh one is
+        created if the ticket still cannot be actioned).
         """
         entry = self._inbox.get(entry_id)
         if entry is None:
@@ -99,6 +133,7 @@ class TriageService:
         note = (note or "").strip()
         commented = False
         comment_id: str | None = None
+        taught = False
         retriaged = False
         outcome: TriageOutcome | None = None
 
@@ -109,6 +144,19 @@ class TriageService:
                 self._log("reviewer", entry.ticket_key,
                           f"Posted comment to Jira (id {comment_id}).",
                           level=ActivityLevel.SUCCESS)
+
+        # Teach the repo mapping: unblocks this ticket and, via the learned-rules
+        # store, resolves future tickets in the same project automatically.
+        if repo is not None and self._learned is not None:
+            ticket_for_project = self._source.get(entry.ticket_key)
+            project = ticket_for_project.project if ticket_for_project else ""
+            self._learned.learn(project=project, repo=repo)
+            taught = True
+            self._log("reviewer", entry.ticket_key,
+                      f"Learned repo mapping: {project or entry.ticket_key} -> {repo}.",
+                      level=ActivityLevel.SUCCESS)
+            # Supplying a repo implies we want to proceed.
+            rerun = True
 
         if rerun:
             self._inbox.resolve(
@@ -133,8 +181,10 @@ class TriageService:
         return InboxResponse(
             entry=final_entry,
             note=note,
+            repo=repo,
             commented=commented,
             comment_id=comment_id,
+            taught=taught,
             retriaged=retriaged,
             outcome=outcome,
         )
@@ -160,10 +210,24 @@ class TriageService:
                 classification,
                 reason=self._low_confidence_reason(classification),
                 agent=None,
+                stage=EscalationStage.CLASSIFICATION,
             )
             return self._finish(outcome)
 
-        # 2. Route to a specialized worker agent.
+        # 2. Resolve which repository the ticket belongs to.
+        resolution = self._resolve(ticket, classification, hint)
+        if self._require_repo and not resolution.is_confident:
+            outcome = self._escalate(
+                ticket,
+                classification,
+                reason=self._repo_reason(resolution),
+                agent=None,
+                stage=EscalationStage.REPOSITORY,
+                resolution=resolution,
+            )
+            return self._finish(outcome)
+
+        # 3. Route to a specialized worker agent.
         agent = self._router.route(classification)
         if agent is None:
             outcome = self._escalate(
@@ -171,14 +235,17 @@ class TriageService:
                 classification,
                 reason=f"No worker agent registered for '{classification.category}'.",
                 agent=None,
+                resolution=resolution,
             )
             return self._finish(outcome)
 
         self._events.publish(TicketRouted(ticket_key=ticket.key, agent=agent.name))
-        self._log(agent.name, ticket.key, f"Picked up {classification.category} ticket.")
+        repo_note = f" (repo {resolution.repo})" if resolution.repo else ""
+        self._log(agent.name, ticket.key,
+                  f"Picked up {classification.category} ticket{repo_note}.")
 
-        # 3. Initial validation by the specialized agent.
-        result = agent.validate(ticket, classification)
+        # 4. Initial validation by the specialized agent.
+        result = agent.validate(ticket, classification, resolution)
         if not result.actionable or result.needs_human:
             outcome = self._escalate(
                 ticket,
@@ -186,14 +253,32 @@ class TriageService:
                 reason=result.summary,
                 agent=agent.name,
                 validation_details=result.details,
+                stage=EscalationStage.VALIDATION,
+                resolution=resolution,
             )
             return self._finish(outcome)
 
-        # 4. Actionable: transition to In Progress and let the agent run.
-        outcome = self._transition(ticket, classification, agent.name, result)
+        # 5. Actionable: transition to In Progress and provision the workspace.
+        outcome = self._transition(ticket, classification, agent.name, result, resolution)
         return self._finish(outcome)
 
     # -- workflow steps -------------------------------------------------------
+
+    def _resolve(
+        self, ticket: Ticket, classification: Classification, hint: str | None = None
+    ) -> RepoResolution:
+        resolution = self._resolver.resolve(ticket, classification, hint)
+        self._events.publish(
+            TicketRepoResolved(ticket_key=ticket.key, resolution=resolution)
+        )
+        if resolution.repo is not None:
+            self._log(
+                "resolver",
+                ticket.key,
+                f"Resolved repo {resolution.repo} "
+                f"({resolution.confidence:.0%}, {resolution.source}).",
+            )
+        return resolution
 
     def _classify(self, ticket: Ticket, hint: str | None = None) -> Classification:
         classification = self._classifier.classify(ticket, hint)
@@ -216,6 +301,7 @@ class TriageService:
         classification: Classification,
         agent: str,
         result,
+        resolution: RepoResolution | None = None,
     ) -> TriageOutcome:
         try:
             updated = self._source.transition(ticket.key, TicketStatus.IN_PROGRESS)
@@ -228,6 +314,7 @@ class TriageService:
                 classification,
                 reason=f"Validated but could not transition to In Progress: {exc}",
                 agent=agent,
+                resolution=resolution,
             )
         self._events.publish(
             TicketTransitioned(
@@ -243,14 +330,37 @@ class TriageService:
             f"Validated and moved to In Progress: {result.summary}",
             level=ActivityLevel.SUCCESS,
         )
+        # The worker agent "starts" by being handed a local workspace.
+        workspace = self._provision(ticket, agent, resolution)
         return TriageOutcome(
             ticket_key=ticket.key,
             action=TriageAction.TRANSITIONED,
             classification=classification,
             agent=agent,
             validation=result,
+            resolution=resolution,
+            workspace=workspace,
             note=result.summary,
         )
+
+    def _provision(
+        self, ticket: Ticket, agent: str, resolution: RepoResolution | None
+    ) -> str:
+        if self._provisioner is None or resolution is None or resolution.repo is None:
+            return ""
+        try:
+            workspace = self._provisioner.provision(resolution.repo, ticket.key)
+        except Exception as exc:  # noqa: BLE001 - cloning is best-effort
+            self._log(agent, ticket.key, f"Workspace provisioning failed: {exc}",
+                      level=ActivityLevel.ERROR)
+            return ""
+        self._log(
+            agent,
+            ticket.key,
+            f"Workspace ready for {resolution.repo} at {workspace}; agent starting.",
+            level=ActivityLevel.SUCCESS,
+        )
+        return workspace
 
     def _escalate(
         self,
@@ -260,6 +370,8 @@ class TriageService:
         reason: str,
         agent: str | None,
         validation_details: tuple[str, ...] = (),
+        stage: EscalationStage = EscalationStage.CLASSIFICATION,
+        resolution: RepoResolution | None = None,
     ) -> TriageOutcome:
         entry = InboxEntry(
             id=self._id_factory(),
@@ -270,6 +382,8 @@ class TriageService:
             agent=agent,
             rationale=classification.rationale,
             details=tuple(validation_details),
+            stage=stage,
+            repo=resolution.repo if resolution else None,
         )
         self._inbox.add(entry)
         # Per the spec, exceptions are surfaced to the jiraya dashboard for human
@@ -278,7 +392,7 @@ class TriageService:
         self._log(
             agent or "triage",
             ticket.key,
-            f"Surfaced for human review: {reason}",
+            f"Surfaced for human review ({stage}): {reason}",
             level=ActivityLevel.WARNING,
         )
         return TriageOutcome(
@@ -286,8 +400,10 @@ class TriageService:
             action=TriageAction.ESCALATED,
             classification=classification,
             agent=agent,
+            resolution=resolution,
             note=reason,
         )
+
 
     def _finish(self, outcome: TriageOutcome) -> TriageOutcome:
         self._metrics.record(outcome)
@@ -320,4 +436,14 @@ class TriageService:
         return (
             f"Low confidence ({classification.confidence:.0%}) on "
             f"'{classification.category}'."
+        )
+
+    @staticmethod
+    def _repo_reason(resolution: RepoResolution) -> str:
+        if resolution.repo is None:
+            return ("Could not resolve which repository this ticket belongs to "
+                    "— respond with a repo (clone URL) to unblock and teach jiraya.")
+        return (
+            f"Low confidence ({resolution.confidence:.0%}) resolving repository "
+            f"'{resolution.repo}' — confirm or correct the repo to proceed."
         )
