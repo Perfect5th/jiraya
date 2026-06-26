@@ -18,16 +18,20 @@ from typing import Callable
 
 from ...domain import Classification, Ticket, TicketCategory
 from ...ports import Classifier
+from .recommend import recommend_model
 
 PromptRunner = Callable[[str], str]
 
 _PROMPT_TEMPLATE = """\
 You are a Jira triage classifier. Classify the ticket below into exactly one
-category: "Bug", "Feature Request", "Documentation", or "Unknown".
+category: "Bug", "Feature Request", "Documentation", or "Unknown". Also
+recommend which model should do the implementation work for this ticket
+(a stronger model for complex/risky work, a cheaper one for trivial changes).
 
 Respond with ONLY a single JSON object, no prose, in this exact shape:
 {{"category": "<one of the categories>", "project": "<target project key>", \
-"confidence": <float 0..1>, "rationale": "<one short sentence>"}}
+"confidence": <float 0..1>, "rationale": "<one short sentence>", \
+"recommended_model": "<model name or empty>"}}
 
 Ticket key: {key}
 Project: {project}
@@ -126,12 +130,17 @@ class CopilotCliClassifier(Classifier):
         except (TypeError, ValueError):
             confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
+        # Use the model the LLM recommended; fall back to the policy default.
+        recommended = str(payload.get("recommended_model", "")).strip()
+        if not recommended:
+            recommended = recommend_model(category, ticket)
         return Classification(
             category=category,
             target_project=str(payload.get("project") or ticket.project),
             confidence=round(confidence, 2),
             rationale=str(payload.get("rationale", "")).strip(),
             source=self.source_name,
+            recommended_model=recommended,
         )
 
 

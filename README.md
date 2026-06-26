@@ -123,6 +123,30 @@ writes, is **disabled in dry-run**. The default runner is a no-op, so the work
 agent never runs unless you opt in. The port is the seam for other runners
 (a different CLI agent, a queue worker, etc.).
 
+### Model selection
+
+The classifier model and the work model are configured **separately**:
+
+- `--classifier-model` — the model the Copilot CLI *classifier* uses.
+- `--work-model` — the model the *work agent* uses. If unset, each ticket uses
+  the model **recommended by its classification** (`Classification.recommended_model`).
+
+The classifier recommends a model per ticket — a deeper model for complex/risky
+work (e.g. a bug with a stack trace or race condition), a cheaper one for
+trivial changes (e.g. a docs typo). The keyword classifier uses a tiered
+heuristic; the Copilot classifier asks the LLM and falls back to that heuristic.
+An explicit `--work-model` always overrides the recommendation.
+
+```bash
+# Cheap classifier, per-ticket recommended work model
+uv run jiraya run --once --apply --classifier copilot \
+  --classifier-model gpt-5-mini --work
+
+# Pin both explicitly
+uv run jiraya run --once --apply --classifier copilot \
+  --classifier-model gpt-5-mini --work --work-model claude-sonnet-4.5
+```
+
 ```bash
 # Resolve against your registry, persist what you teach, and clone workspaces
 uv run jiraya run --once --apply \

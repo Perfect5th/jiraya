@@ -99,6 +99,7 @@ class Classification:
     confidence: float
     rationale: str = ""
     source: str = "unknown"  # which classifier produced this
+    recommended_model: str = ""  # model recommended for working this ticket
 
     @property
     def is_confident(self) -> bool:
@@ -163,6 +164,7 @@ class WorkResult:
     summary: str = ""
     branch: str = ""
     pr_url: str = ""
+    model: str = ""  # the model the work agent ran with
     details: tuple[str, ...] = ()
 
     @property

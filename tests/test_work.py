@@ -74,7 +74,7 @@ def test_noop_runner_records_and_skips():
 # -- copilot runner ----------------------------------------------------------
 
 def test_copilot_runner_skips_without_workspace():
-    r = CopilotWorkAgentRunner(runner=lambda p, c: "PR_URL: https://x/pull/1")
+    r = CopilotWorkAgentRunner(runner=lambda p, c, m: "PR_URL: https://x/pull/1")
     out = r.run(_ticket(), _cls(), _res(), "")
     assert out.started is False
     assert "workspace" in out.summary.lower()
@@ -83,9 +83,10 @@ def test_copilot_runner_skips_without_workspace():
 def test_copilot_runner_runs_in_workspace_and_parses_pr(tmp_path):
     seen = {}
 
-    def fake(prompt: str, cwd: str) -> str:
+    def fake(prompt: str, cwd: str, model: str | None) -> str:
         seen["cwd"] = cwd
         seen["prompt"] = prompt
+        seen["model"] = model
         return "implemented\nPR_URL: https://github.com/acme/proj/pull/7\n"
 
     ws = tmp_path / "PROJ-1"
@@ -98,18 +99,52 @@ def test_copilot_runner_runs_in_workspace_and_parses_pr(tmp_path):
     assert out.branch == "jiraya/proj-1"
     assert seen["cwd"] == str(ws)
     assert "PROJ-1" in seen["prompt"]
+    # No explicit model and no recommendation -> Copilot "auto".
+    assert seen["model"] == "auto"
+    assert out.model == "auto"
 
 
 def test_copilot_runner_handles_failure_gracefully(tmp_path):
     ws = tmp_path / "PROJ-1"
     ws.mkdir()
 
-    def boom(prompt: str, cwd: str) -> str:
+    def boom(prompt: str, cwd: str, model: str | None) -> str:
         raise RuntimeError("copilot exploded")
 
     out = CopilotWorkAgentRunner(runner=boom).run(_ticket(), _cls(), _res(), str(ws))
     assert out.started is False
     assert "exploded" in out.summary
+
+
+def test_work_runner_uses_recommended_model_when_no_explicit(tmp_path):
+    ws = tmp_path / "PROJ-1"
+    ws.mkdir()
+    seen = {}
+
+    def fake(prompt, cwd, model):
+        seen["model"] = model
+        return "PR_URL: https://x/pull/1"
+
+    cls = Classification(TicketCategory.BUG, "PROJ", 0.9, recommended_model="claude-opus-4.5")
+    out = CopilotWorkAgentRunner(runner=fake).run(_ticket(), cls, _res(), str(ws))
+    assert seen["model"] == "claude-opus-4.5"
+    assert out.model == "claude-opus-4.5"
+
+
+def test_work_runner_explicit_model_overrides_recommendation(tmp_path):
+    ws = tmp_path / "PROJ-1"
+    ws.mkdir()
+    seen = {}
+
+    def fake(prompt, cwd, model):
+        seen["model"] = model
+        return "PR_URL: https://x/pull/1"
+
+    cls = Classification(TicketCategory.BUG, "PROJ", 0.9, recommended_model="claude-opus-4.5")
+    out = CopilotWorkAgentRunner(runner=fake, model="gpt-5-mini").run(
+        _ticket(), cls, _res(), str(ws))
+    assert seen["model"] == "gpt-5-mini"  # explicit wins over recommendation
+    assert out.model == "gpt-5-mini"
 
 
 # -- harness wiring ----------------------------------------------------------
@@ -142,7 +177,7 @@ def test_harness_records_pr_and_publishes_event(tmp_path):
     ws = tmp_path / "PROJ-101"
     ws.mkdir()
     runner = CopilotWorkAgentRunner(
-        runner=lambda p, c: "PR_URL: https://github.com/acme/proj-service/pull/9"
+        runner=lambda p, c, m: "PR_URL: https://github.com/acme/proj-service/pull/9"
     )
 
     class FixedProvisioner:
@@ -201,3 +236,13 @@ def test_work_implies_real_provisioning():
     from jiraya.adapters.workspace import GitWorkspaceProvisioner
     system = build_system(JirayaConfig(source="memory", work=True))
     assert isinstance(system.provisioner, GitWorkspaceProvisioner)
+
+
+def test_composition_work_model_is_passed_to_runner():
+    system = build_system(JirayaConfig(source="memory", work=True, work_model="gpt-5-mini"))
+    assert system.work_runner._model == "gpt-5-mini"
+
+
+def test_composition_no_work_model_lets_recommendation_apply():
+    system = build_system(JirayaConfig(source="memory", work=True))
+    assert system.work_runner._model is None

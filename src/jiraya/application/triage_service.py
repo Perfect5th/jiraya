@@ -291,12 +291,14 @@ class TriageService:
             TicketClassified(ticket=ticket, classification=classification)
         )
         suffix = " using reviewer hint" if hint else ""
+        model = (f" · model: {classification.recommended_model}"
+                 if classification.recommended_model else "")
         self._log(
             "classifier",
             ticket.key,
             f"Classified as {classification.category} "
             f"({classification.confidence:.0%} confidence) -> "
-            f"{classification.target_project}{suffix}.",
+            f"{classification.target_project}{suffix}{model}.",
         )
         return classification
 

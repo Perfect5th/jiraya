@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from ...domain import Classification, Ticket, TicketCategory
 from ...ports import Classifier
+from .recommend import recommend_model
 
 _SIGNALS: dict[TicketCategory, tuple[str, ...]] = {
     TicketCategory.BUG: (
@@ -100,6 +101,7 @@ class KeywordClassifier(Classifier):
                 confidence=0.2,
                 rationale="No category signals found in issue type, labels or text.",
                 source=self.source_name,
+                recommended_model=recommend_model(TicketCategory.UNKNOWN, ticket),
             )
 
         runner_up = max((scores[c] for c in scores if c != best), default=0)
@@ -118,4 +120,5 @@ class KeywordClassifier(Classifier):
             confidence=round(confidence, 2),
             rationale=rationale + ".",
             source=self.source_name,
+            recommended_model=recommend_model(best, ticket),
         )

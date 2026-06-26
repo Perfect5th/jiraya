@@ -68,7 +68,8 @@ def _config_from_args(args: argparse.Namespace) -> JirayaConfig:
         classifier=args.classifier,
         source=args.source,
         interval_seconds=args.interval,
-        copilot_model=args.copilot_model,
+        classifier_model=args.classifier_model,
+        work_model=args.work_model,
         copilot_fallback_to_keyword=args.copilot_fallback,
         dry_run=dry_run,
         repo_registry_path=args.repo_registry,
@@ -88,8 +89,11 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                              "credentials are configured, else the in-memory demo.")
     parser.add_argument("--interval", type=float, default=1800.0,
                         help="Seconds between poll cycles.")
-    parser.add_argument("--copilot-model", default=None,
+    parser.add_argument("--classifier-model", default=None,
                         help="Model for the Copilot CLI classifier.")
+    parser.add_argument("--work-model", default=None,
+                        help="Model for the work agent. If unset, each ticket uses "
+                             "the model recommended by its classification.")
     parser.add_argument("--copilot-fallback", action="store_true",
                         help="Fall back to the keyword classifier if Copilot fails.")
     parser.add_argument("--repo-registry", default=None,

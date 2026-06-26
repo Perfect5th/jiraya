@@ -84,7 +84,8 @@ class JirayaConfig:
     source: str = "auto"             # "auto" | "memory" | "jira"
     interval_seconds: float = 1800.0
     confidence_threshold: float = 0.6
-    copilot_model: str | None = None
+    classifier_model: str | None = None  # model for the Copilot CLI classifier
+    work_model: str | None = None        # model for the work agent (else recommended)
     copilot_fallback_to_keyword: bool = False
     dry_run: bool = False
     repo_registry_path: str | None = None   # YAML repo catalog
@@ -122,7 +123,7 @@ class JirayaSystem:
 def build_classifier(config: JirayaConfig) -> Classifier:
     if config.classifier == "copilot":
         fallback = KeywordClassifier() if config.copilot_fallback_to_keyword else None
-        return CopilotCliClassifier(model=config.copilot_model, fallback=fallback)
+        return CopilotCliClassifier(model=config.classifier_model, fallback=fallback)
     if config.classifier == "keyword":
         return KeywordClassifier()
     raise ValueError(f"Unknown classifier: {config.classifier!r}")
@@ -161,7 +162,8 @@ def build_provisioner(config: JirayaConfig, *, dry_run: bool) -> WorkspaceProvis
 
 def build_work_runner(config: JirayaConfig, *, dry_run: bool) -> WorkAgentRunner:
     if config.work and not dry_run:
-        return CopilotWorkAgentRunner(model=config.copilot_model)
+        # No explicit work model falls back to the per-ticket recommendation.
+        return CopilotWorkAgentRunner(model=config.work_model)
     return NoopWorkAgentRunner()
 
 

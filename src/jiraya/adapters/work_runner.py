@@ -16,8 +16,8 @@ from typing import Callable
 
 from ..domain import Classification, RepoResolution, Ticket, WorkResult
 
-# (prompt, cwd) -> stdout
-PromptRunner = Callable[[str, str], str]
+# (prompt, cwd, model) -> stdout
+PromptRunner = Callable[[str, str, "str | None"], str]
 
 _PR_LABEL_RE = re.compile(r"PR_URL:\s*(\S+)", re.IGNORECASE)
 _PR_URL_RE = re.compile(
@@ -62,7 +62,12 @@ class NoopWorkAgentRunner:
 
 
 class CopilotWorkAgentRunner:
-    """Runs the Copilot CLI in the cloned workspace and opens a PR."""
+    """Runs the Copilot CLI in the cloned workspace and opens a PR.
+
+    The model is chosen per ticket: the explicitly-configured work ``model`` if
+    set, otherwise the model the classifier *recommended* for this ticket,
+    otherwise Copilot's ``auto``.
+    """
 
     def __init__(
         self,
@@ -73,8 +78,7 @@ class CopilotWorkAgentRunner:
         timeout: float = 1800.0,
     ) -> None:
         self._command = command or ["copilot", "--allow-all-tools", "--no-color"]
-        if model:
-            self._command = [*self._command, "--model", model]
+        self._model = model  # explicit work model (overrides any recommendation)
         self._runner = runner or _default_runner(self._command, timeout)
 
     def run(
@@ -88,6 +92,7 @@ class CopilotWorkAgentRunner:
             return WorkResult.skipped(
                 f"No provisioned workspace for {ticket.key}; skipping work agent."
             )
+        model = self._model or classification.recommended_model or "auto"
         branch = f"jiraya/{ticket.key.lower()}"
         prompt = _PROMPT_TEMPLATE.format(
             key=ticket.key,
@@ -98,27 +103,32 @@ class CopilotWorkAgentRunner:
             branch=branch,
         )
         try:
-            output = self._runner(prompt, workspace)
+            output = self._runner(prompt, workspace, model)
         except Exception as exc:  # noqa: BLE001 - work is best-effort, never crash triage
             return WorkResult(
-                started=False,
+                started=False, model=model,
                 summary=f"Work agent failed for {ticket.key}: {exc}",
             )
         pr_url = _extract_pr_url(output)
         summary = (
-            f"Opened pull request for {ticket.key}."
+            f"Opened pull request for {ticket.key} (model {model})."
             if pr_url
-            else f"Work agent ran for {ticket.key} but reported no PR URL."
+            else f"Work agent ran for {ticket.key} (model {model}) but reported no PR URL."
         )
-        return WorkResult(started=True, summary=summary, branch=branch, pr_url=pr_url)
+        return WorkResult(
+            started=True, summary=summary, branch=branch, pr_url=pr_url, model=model
+        )
 
 
 def _default_runner(command: list[str], timeout: float) -> PromptRunner:
-    def run(prompt: str, cwd: str) -> str:
+    def run(prompt: str, cwd: str, model: str | None) -> str:
         if shutil.which(command[0]) is None:
             raise RuntimeError(f"'{command[0]}' not found on PATH")
+        cmd = [*command]
+        if model:
+            cmd += ["--model", model]
         completed = subprocess.run(
-            [*command, "-p", prompt],
+            [*cmd, "-p", prompt],
             cwd=cwd,
             capture_output=True,
             text=True,
