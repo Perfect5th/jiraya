@@ -25,7 +25,8 @@ logic is fully decoupled from Jira, the LLM, and the front-end:
    ┌────────────────────────▼──────┐               ┌─────────▼───────────────────┐
    │  TicketSource                 │               │  Classifier                 │
    │   • InMemory (seed/offline)   │               │   • Keyword (deterministic) │
-   │   • JiraRest (httpx)          │               │   • CopilotCli (LLM)        │
+   │   • JiraRest (httpx)          │               │   • CopilotCli · GeminiCli  │
+   │                               │               │     (LLM)                   │
    ├───────────────────────────────┤               ├─────────────────────────────┤
    │  RepoResolver                 │               │  WorkspaceProvisioner       │
    │   • Registry (YAML)           │               │   • Noop (dry-run)          │
@@ -33,7 +34,8 @@ logic is fully decoupled from Jira, the LLM, and the front-end:
    ├───────────────────────────────┤               ├─────────────────────────────┤
    │  WorkAgentRunner              │               │  InboxRepository · EventBus │
    │   • Noop (default)            │               │                             │
-   │   • Copilot (implement + PR)  │               │                             │
+   │   • Copilot · Gemini          │               │                             │
+   │     (implement + PR)          │               │                             │
    ├───────────────────────────────┴───────────────┴─────────────────────────────┤
    │  WorkerAgent: Bug / Feature / Documentation                                  │
    └──────────────────────────────────────────────────────────────────────────────┘
@@ -50,9 +52,9 @@ logic is fully decoupled from Jira, the LLM, and the front-end:
   route → validate → transition → provision → run work), `AgentRouter`,
   `TriagePoller`.
 - **`adapters/`** — `inmemory` (default, offline), `jira` (real REST API),
-  `classifier` (keyword + Copilot CLI), `resolver` (registry + learned + keyword),
-  `workspace` (noop + git), `work_runner` (noop + Copilot), `sqlite` (durable
-  inbox + ledger), `agents`.
+  `classifier` (keyword + Copilot CLI + Gemini CLI), `resolver` (registry +
+  learned + keyword), `workspace` (noop + git), `work_runner` (noop + Copilot +
+  Gemini), `sqlite` (durable inbox + ledger), `agents`.
 - **`tui/`** — the Textual dashboard (a driving adapter).
 - **`composition.py`** — the composition root that wires everything together.
 
@@ -107,22 +109,31 @@ respond with a corrected repo **clone URL** to teach the resolver and re-run.
 ## Work agent (implement + open a PR)
 
 Right after provisioning, the harness calls a `WorkAgentRunner` to actually do
-the work in the cloned workspace. The `CopilotWorkAgentRunner` invokes the
-GitHub Copilot CLI in the checkout to implement the ticket, push a branch, and
-open a pull request; the resulting PR URL is recorded on the outcome and shown
-in the dashboard.
+the work in the cloned workspace. Two LLM-CLI runners ship: the
+`CopilotWorkAgentRunner` (GitHub Copilot CLI, the default) and the
+`GeminiWorkAgentRunner` (Gemini CLI). Each invokes its agent in the checkout to
+implement the ticket, push a branch, and open a pull request; the resulting PR
+URL is recorded on the outcome and shown in the dashboard. Select the provider
+with `--work-agent {copilot,gemini}`.
 
 ```bash
-# Resolve repo, clone it, run Copilot, and open a PR (real writes — use --apply)
+# Resolve repo, clone it, run the work agent, and open a PR (real writes — use --apply)
 uv run jiraya run --once --apply \
   --repo-registry examples/repo_registry.yaml \
   --work
+
+# Same, but drive the Gemini CLI as the work agent
+uv run jiraya run --once --apply \
+  --repo-registry examples/repo_registry.yaml \
+  --work --work-agent gemini
 ```
 
 `--work` implies `--provision` (the agent needs a checkout) and, like all
 writes, is **disabled in dry-run**. The default runner is a no-op, so the work
-agent never runs unless you opt in. The port is the seam for other runners
-(a different CLI agent, a queue worker, etc.).
+agent never runs unless you opt in. The Gemini runner auto-approves tool calls
+(`--yolo`) and trusts the freshly-cloned workspace (`--skip-trust`) so it runs
+unattended. The port is the seam for other runners (a different CLI agent, a
+queue worker, etc.).
 
 ### When the agent gets stuck (NEEDS_INPUT)
 
@@ -157,15 +168,18 @@ initial work; a clone failure escalates at the `provisioning` stage.
 
 The classifier model and the work model are configured **separately**:
 
-- `--classifier-model` — the model the Copilot CLI *classifier* uses.
+- `--classifier-model` — the model the LLM CLI *classifier* (copilot/gemini) uses.
 - `--work-model` — the model the *work agent* uses. If unset, each ticket uses
   the model **recommended by its classification** (`Classification.recommended_model`).
 
 The classifier recommends a model per ticket — a deeper model for complex/risky
 work (e.g. a bug with a stack trace or race condition), a cheaper one for
 trivial changes (e.g. a docs typo). The keyword classifier uses a tiered
-heuristic; the Copilot classifier asks the LLM and falls back to that heuristic.
-An explicit `--work-model` always overrides the recommendation.
+heuristic; the LLM classifiers ask the model and fall back to that heuristic.
+The recommendation tiers are **provider-specific** (Copilot names like
+`claude-opus-4.5`/`gpt-5-mini`; Gemini names like `gemini-2.5-pro`/
+`gemini-2.5-flash`), so the recommended model is always one the chosen work
+agent accepts. An explicit `--work-model` always overrides the recommendation.
 
 ```bash
 # Cheap classifier, per-ticket recommended work model
@@ -175,6 +189,10 @@ uv run jiraya run --once --apply --classifier copilot \
 # Pin both explicitly
 uv run jiraya run --once --apply --classifier copilot \
   --classifier-model gpt-5-mini --work --work-model claude-sonnet-4.5
+
+# Gemini end to end (classifier + work agent)
+uv run jiraya run --once --apply --classifier gemini \
+  --work --work-agent gemini
 ```
 
 ```bash
@@ -247,9 +265,18 @@ uv run jiraya run                 # poll forever (Ctrl-C to stop)
 # Use the GitHub Copilot CLI as the classification agent
 uv run jiraya run --once --classifier copilot
 
-# Fall back to the deterministic keyword classifier if Copilot is unavailable
+# Use the Gemini CLI as the classification agent
+uv run jiraya run --once --classifier gemini
+
+# Fall back to the deterministic keyword classifier if the LLM CLI is unavailable
 uv run jiraya run --once --classifier copilot --copilot-fallback
 ```
+
+The Copilot and Gemini classifiers are interchangeable LLM-CLI adapters over a
+shared base (`LlmCliClassifier`): they prompt their CLI for a single JSON object
+and parse the category, confidence and recommended model. The Gemini classifier
+runs read-only (`--approval-mode plan`) since classification never writes.
+`--copilot-fallback` applies to whichever LLM classifier is selected.
 
 By default jiraya runs fully offline against an in-memory Jira seeded with a
 representative batch of tickets, so it is runnable with zero configuration.
@@ -343,6 +370,6 @@ uv run pytest
 
 The suite covers the domain, the harness, every adapter (including the Jira
 REST adapter via `httpx.MockTransport`, token pagination, the read-only
-dry-run wrapper, the Copilot classifier via an injected runner, and the SQLite
-state store round-tripping across restarts), and the TUI via Textual's headless
-pilot.
+dry-run wrapper, the Copilot and Gemini classifiers and work runners via
+injected runners, and the SQLite state store round-tripping across restarts),
+and the TUI via Textual's headless pilot.

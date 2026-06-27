@@ -92,13 +92,14 @@ def _config_from_args(args: argparse.Namespace) -> JirayaConfig:
         require_repo=not args.no_require_repo,
         provision=args.provision,
         work=args.work,
+        work_agent=args.work_agent,
         state_db_path=_resolve_state_db(args),
         jira=jira,
     )
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--classifier", choices=["keyword", "copilot"],
+    parser.add_argument("--classifier", choices=["keyword", "copilot", "gemini"],
                         default="keyword", help="Intent classifier to use.")
     parser.add_argument("--source", choices=["auto", "memory", "jira"], default="auto",
                         help="Ticket source. 'auto' uses real Jira when "
@@ -106,12 +107,16 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--interval", type=float, default=1800.0,
                         help="Seconds between poll cycles.")
     parser.add_argument("--classifier-model", default=None,
-                        help="Model for the Copilot CLI classifier.")
+                        help="Model for the LLM CLI classifier (copilot/gemini).")
     parser.add_argument("--work-model", default=None,
                         help="Model for the work agent. If unset, each ticket uses "
                              "the model recommended by its classification.")
+    parser.add_argument("--work-agent", choices=["copilot", "gemini"],
+                        default="copilot",
+                        help="Coding-agent CLI the work agent drives (with --work).")
     parser.add_argument("--copilot-fallback", action="store_true",
-                        help="Fall back to the keyword classifier if Copilot fails.")
+                        help="Fall back to the keyword classifier if the LLM "
+                             "classifier (copilot/gemini) is unavailable.")
     parser.add_argument("--repo-registry", default=None,
                         help="Path to a YAML repo registry (project->repo catalog).")
     parser.add_argument("--learned-rules", default=None,
@@ -129,7 +134,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                         help="git clone resolved repos into local workspaces so the "
                              "worker agent can start (off by default; never in dry-run).")
     parser.add_argument("--work", action="store_true",
-                        help="Run the work agent (Copilot CLI) in the cloned "
+                        help="Run the work agent (see --work-agent) in the cloned "
                              "workspace to implement the ticket and open a PR "
                              "(implies --provision; never in dry-run).")
     writes = parser.add_mutually_exclusive_group()

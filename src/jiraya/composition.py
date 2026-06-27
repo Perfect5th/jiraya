@@ -12,11 +12,16 @@ from dataclasses import dataclass, field
 
 from .adapters import (
     CopilotWorkAgentRunner,
+    GeminiWorkAgentRunner,
     NoopWorkAgentRunner,
     ReadOnlyTicketSource,
 )
 from .adapters.agents import default_agents
-from .adapters.classifier import CopilotCliClassifier, KeywordClassifier
+from .adapters.classifier import (
+    CopilotCliClassifier,
+    GeminiCliClassifier,
+    KeywordClassifier,
+)
 from .adapters.inmemory import (
     InMemoryEventBus,
     InMemoryInboxRepository,
@@ -83,11 +88,11 @@ class JiraConfig:
 class JirayaConfig:
     """User-facing configuration for assembling the system."""
 
-    classifier: str = "keyword"      # "keyword" | "copilot"
+    classifier: str = "keyword"      # "keyword" | "copilot" | "gemini"
     source: str = "auto"             # "auto" | "memory" | "jira"
     interval_seconds: float = 1800.0
     confidence_threshold: float = 0.6
-    classifier_model: str | None = None  # model for the Copilot CLI classifier
+    classifier_model: str | None = None  # model for the LLM CLI classifier
     work_model: str | None = None        # model for the work agent (else recommended)
     copilot_fallback_to_keyword: bool = False
     dry_run: bool = False
@@ -95,7 +100,8 @@ class JirayaConfig:
     learned_rules_path: str | None = None    # where learned repo rules persist
     require_repo: bool = True                 # gate on confident repo resolution
     provision: bool = False                   # actually `git clone` workspaces
-    work: bool = False                        # run the work agent (Copilot) + open PRs
+    work: bool = False                        # run the work agent + open PRs
+    work_agent: str = "copilot"               # "copilot" | "gemini"
     state_db_path: str | None = None          # SQLite file for the inbox + ledger
     jira: JiraConfig = field(default_factory=JiraConfig)
 
@@ -126,9 +132,10 @@ class JirayaSystem:
 
 
 def build_classifier(config: JirayaConfig) -> Classifier:
-    if config.classifier == "copilot":
+    if config.classifier in ("copilot", "gemini"):
         fallback = KeywordClassifier() if config.copilot_fallback_to_keyword else None
-        return CopilotCliClassifier(model=config.classifier_model, fallback=fallback)
+        cls = CopilotCliClassifier if config.classifier == "copilot" else GeminiCliClassifier
+        return cls(model=config.classifier_model, fallback=fallback)
     if config.classifier == "keyword":
         return KeywordClassifier()
     raise ValueError(f"Unknown classifier: {config.classifier!r}")
@@ -168,7 +175,11 @@ def build_provisioner(config: JirayaConfig, *, dry_run: bool) -> WorkspaceProvis
 def build_work_runner(config: JirayaConfig, *, dry_run: bool) -> WorkAgentRunner:
     if config.work and not dry_run:
         # No explicit work model falls back to the per-ticket recommendation.
-        return CopilotWorkAgentRunner(model=config.work_model)
+        if config.work_agent == "gemini":
+            return GeminiWorkAgentRunner(model=config.work_model)
+        if config.work_agent == "copilot":
+            return CopilotWorkAgentRunner(model=config.work_model)
+        raise ValueError(f"Unknown work agent: {config.work_agent!r}")
     return NoopWorkAgentRunner()
 
 

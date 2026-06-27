@@ -93,7 +93,8 @@ def _args(**overrides):
         classifier_model=None, work_model=None, copilot_fallback=False,
         dry_run=False, apply=False,
         repo_registry=None, learned_rules=None, no_require_repo=False, provision=False,
-        work=False, state_db=None, no_state=False, default_state=False,
+        work=False, work_agent="copilot", state_db=None, no_state=False,
+        default_state=False,
     )
     for k, v in overrides.items():
         setattr(ns, k, v)
@@ -128,3 +129,20 @@ def test_cli_memory_source_is_never_dry_run(monkeypatch):
     cfg = _config_from_args(_args())
     assert cfg.resolve_source() == "memory"
     assert cfg.dry_run is False
+
+
+def test_cli_parses_gemini_classifier_and_work_agent():
+    from jiraya.cli import build_parser, _config_from_args
+    args = build_parser().parse_args(
+        ["run", "--source", "memory", "--classifier", "gemini",
+         "--work", "--work-agent", "gemini", "--work-model", "gemini-2.5-pro"])
+    cfg = _config_from_args(args)
+    assert cfg.classifier == "gemini"
+    assert cfg.work_agent == "gemini"
+    assert cfg.work_model == "gemini-2.5-pro"
+
+
+def test_cli_work_agent_defaults_to_copilot():
+    from jiraya.cli import build_parser, _config_from_args
+    args = build_parser().parse_args(["run", "--source", "memory", "--work"])
+    assert _config_from_args(args).work_agent == "copilot"

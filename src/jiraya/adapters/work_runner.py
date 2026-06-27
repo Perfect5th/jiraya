@@ -1,9 +1,11 @@
 """Work-agent runner adapters.
 
 The default runner is a no-op (records intent, does nothing) so the harness is
-safe in dry-run and tests. The Copilot runner invokes the GitHub Copilot CLI
-inside the cloned workspace to implement the ticket and open a pull request —
-mirroring the injectable structure of the Copilot *classifier*.
+safe in dry-run and tests. The LLM-CLI runners invoke a coding-agent CLI inside
+the cloned workspace to implement the ticket and open a pull request, mirroring
+the injectable structure of the LLM *classifiers*. Two providers are shipped:
+:class:`CopilotWorkAgentRunner` (GitHub Copilot CLI) and
+:class:`GeminiWorkAgentRunner` (Gemini CLI); both share one base.
 """
 
 from __future__ import annotations
@@ -98,13 +100,19 @@ class NoopWorkAgentRunner:
         return WorkResult.skipped("Work agent not configured (no-op).")
 
 
-class CopilotWorkAgentRunner:
-    """Runs the Copilot CLI in the cloned workspace and opens a PR.
+class LlmCliWorkAgentRunner:
+    """Runs a coding-agent CLI in the cloned workspace and opens a PR.
+
+    Subclasses set :attr:`default_command` and :attr:`default_model`.
 
     The model is chosen per ticket: the explicitly-configured work ``model`` if
     set, otherwise the model the classifier *recommended* for this ticket,
-    otherwise Copilot's ``auto``.
+    otherwise the provider's :attr:`default_model` (an empty string means "omit
+    the model flag and let the CLI use its configured default").
     """
+
+    default_command: list[str] = []
+    default_model: str = ""
 
     def __init__(
         self,
@@ -114,7 +122,7 @@ class CopilotWorkAgentRunner:
         model: str | None = None,
         timeout: float = 1800.0,
     ) -> None:
-        self._command = command or ["copilot", "--allow-all-tools", "--no-color"]
+        self._command = command or list(self.default_command)
         self._model = model  # explicit work model (overrides any recommendation)
         self._runner = runner or _default_runner(self._command, timeout)
 
@@ -131,7 +139,9 @@ class CopilotWorkAgentRunner:
             return WorkResult.skipped(
                 f"No provisioned workspace for {ticket.key}; skipping work agent."
             )
-        model = self._model or classification.recommended_model or "auto"
+        model = self._model or classification.recommended_model or self.default_model
+        # Empty resolves to the CLI default; "default" is a human-readable label.
+        display_model = model or "default"
         branch = f"jiraya/{ticket.key.lower()}"
         if answer:
             prompt = _RESUME_TEMPLATE.format(
@@ -156,22 +166,44 @@ class CopilotWorkAgentRunner:
             output = self._runner(prompt, workspace, model)
         except Exception as exc:  # noqa: BLE001 - work is best-effort, never crash triage
             return WorkResult(
-                started=False, model=model,
+                started=False, model=display_model,
                 summary=f"Work agent failed for {ticket.key}: {exc}",
             )
         # A blocked agent asks a question instead of opening a PR.
         question = _extract_question(output)
         if question:
-            return WorkResult.blocked(question, branch=branch, model=model)
+            return WorkResult.blocked(question, branch=branch, model=display_model)
         pr_url = _extract_pr_url(output)
         summary = (
-            f"Opened pull request for {ticket.key} (model {model})."
+            f"Opened pull request for {ticket.key} (model {display_model})."
             if pr_url
-            else f"Work agent ran for {ticket.key} (model {model}) but reported no PR URL."
+            else f"Work agent ran for {ticket.key} (model {display_model}) but reported no PR URL."
         )
         return WorkResult(
-            started=True, summary=summary, branch=branch, pr_url=pr_url, model=model
+            started=True, summary=summary, branch=branch, pr_url=pr_url,
+            model=display_model,
         )
+
+
+class CopilotWorkAgentRunner(LlmCliWorkAgentRunner):
+    """Runs the GitHub Copilot CLI in the cloned workspace and opens a PR."""
+
+    default_command = ["copilot", "--allow-all-tools", "--no-color"]
+    default_model = "auto"  # let Copilot choose when nothing else applies
+
+
+class GeminiWorkAgentRunner(LlmCliWorkAgentRunner):
+    """Runs the Gemini CLI in the cloned workspace and opens a PR.
+
+    ``--yolo`` auto-approves tool calls (edits, git, ``gh``) so the agent runs
+    unattended; ``--skip-trust`` trusts the freshly-cloned workspace so it never
+    blocks on a trust prompt. With no resolved model, ``--model`` is omitted and
+    the Gemini CLI uses its configured default.
+    """
+
+    default_command = ["gemini", "--yolo", "--skip-trust"]
+    default_model = ""  # omit --model; let the Gemini CLI use its default
+
 
 
 def _default_runner(command: list[str], timeout: float) -> PromptRunner:
