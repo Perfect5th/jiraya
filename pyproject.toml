@@ -1,6 +1,6 @@
 [project]
 name = "jiraku"
-version = "0.6.1"
+version = "0.7.1"
 description = "Agent-powered Jira triage agent with a TUI dashboard"
 requires-python = ">=3.12"
 dependencies = [

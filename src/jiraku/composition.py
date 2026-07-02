@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from .adapters import (
     CopilotWorkAgentRunner,
     GeminiWorkAgentRunner,
+    OpencodeWorkAgentRunner,
     NoopWorkAgentRunner,
     ReadOnlyTicketSource,
 )
@@ -20,6 +21,7 @@ from .adapters.agents import default_agents
 from .adapters.classifier import (
     CopilotCliClassifier,
     GeminiCliClassifier,
+    OpencodeCliClassifier,
     KeywordClassifier,
 )
 from .adapters.inmemory import (
@@ -88,7 +90,7 @@ class JiraConfig:
 class JirakuConfig:
     """User-facing configuration for assembling the system."""
 
-    classifier: str = "keyword"      # "keyword" | "copilot" | "gemini"
+    classifier: str = "keyword"      # "keyword" | "copilot" | "gemini" | "opencode"
     source: str = "auto"             # "auto" | "memory" | "jira"
     interval_seconds: float = 1800.0
     confidence_threshold: float = 0.6
@@ -101,7 +103,7 @@ class JirakuConfig:
     require_repo: bool = True                 # gate on confident repo resolution
     provision: bool = False                   # actually `git clone` workspaces
     work: bool = False                        # run the work agent + open PRs
-    work_agent: str = "copilot"               # "copilot" | "gemini"
+    work_agent: str = "copilot"               # "copilot" | "gemini" | "opencode"
     state_db_path: str | None = None          # SQLite file for the inbox + ledger
     jira: JiraConfig = field(default_factory=JiraConfig)
 
@@ -131,10 +133,17 @@ class JirakuSystem:
     dry_run: bool = False
 
 
+_LLM_CLASSIFIERS = {
+    "copilot": CopilotCliClassifier,
+    "gemini": GeminiCliClassifier,
+    "opencode": OpencodeCliClassifier,
+}
+
+
 def build_classifier(config: JirakuConfig) -> Classifier:
-    if config.classifier in ("copilot", "gemini"):
+    if config.classifier in _LLM_CLASSIFIERS:
         fallback = KeywordClassifier() if config.copilot_fallback_to_keyword else None
-        cls = CopilotCliClassifier if config.classifier == "copilot" else GeminiCliClassifier
+        cls = _LLM_CLASSIFIERS[config.classifier]
         return cls(model=config.classifier_model, fallback=fallback)
     if config.classifier == "keyword":
         return KeywordClassifier()
@@ -172,14 +181,20 @@ def build_provisioner(config: JirakuConfig, *, dry_run: bool) -> WorkspaceProvis
     return NoopWorkspaceProvisioner()
 
 
+_WORK_AGENT_RUNNERS = {
+    "copilot": CopilotWorkAgentRunner,
+    "gemini": GeminiWorkAgentRunner,
+    "opencode": OpencodeWorkAgentRunner,
+}
+
+
 def build_work_runner(config: JirakuConfig, *, dry_run: bool) -> WorkAgentRunner:
     if config.work and not dry_run:
         # No explicit work model falls back to the per-ticket recommendation.
-        if config.work_agent == "gemini":
-            return GeminiWorkAgentRunner(model=config.work_model)
-        if config.work_agent == "copilot":
-            return CopilotWorkAgentRunner(model=config.work_model)
-        raise ValueError(f"Unknown work agent: {config.work_agent!r}")
+        runner_cls = _WORK_AGENT_RUNNERS.get(config.work_agent)
+        if runner_cls is None:
+            raise ValueError(f"Unknown work agent: {config.work_agent!r}")
+        return runner_cls(model=config.work_model)
     return NoopWorkAgentRunner()
 
 

@@ -113,6 +113,7 @@ class LlmCliWorkAgentRunner:
 
     default_command: list[str] = []
     default_model: str = ""
+    prompt_flag: str | None = "-p"  # None => pass the prompt as a positional arg
 
     def __init__(
         self,
@@ -124,7 +125,18 @@ class LlmCliWorkAgentRunner:
     ) -> None:
         self._command = command or list(self.default_command)
         self._model = model  # explicit work model (overrides any recommendation)
-        self._runner = runner or _default_runner(self._command, timeout)
+        self._runner = runner or _default_runner(
+            self._command, timeout, self.prompt_flag
+        )
+
+    def _normalize_model(self, model: str) -> str:
+        """Adapt a resolved model name to the provider's expected form.
+
+        The base runner passes model names through unchanged; providers whose
+        CLI expects a particular format (e.g. opencode's ``provider/model``)
+        override this so a bare recommendation from the classifier still works.
+        """
+        return model
 
     def run(
         self,
@@ -140,6 +152,7 @@ class LlmCliWorkAgentRunner:
                 f"No provisioned workspace for {ticket.key}; skipping work agent."
             )
         model = self._model or classification.recommended_model or self.default_model
+        model = self._normalize_model(model)
         # Empty resolves to the CLI default; "default" is a human-readable label.
         display_model = model or "default"
         branch = f"jiraku/{ticket.key.lower()}"
@@ -205,16 +218,49 @@ class GeminiWorkAgentRunner(LlmCliWorkAgentRunner):
     default_model = ""  # omit --model; let the Gemini CLI use its default
 
 
+class OpencodeWorkAgentRunner(LlmCliWorkAgentRunner):
+    """Runs opencode in the cloned workspace and opens a PR.
 
-def _default_runner(command: list[str], timeout: float) -> PromptRunner:
+    opencode takes the prompt as a positional argument (``opencode run
+    <prompt>``) rather than via ``-p``, so ``prompt_flag`` is ``None``.
+    ``--dangerously-skip-permissions`` auto-approves tool calls (edits, git,
+    ``gh``) so the agent runs unattended. With no resolved model, ``--model`` is
+    omitted and opencode uses its configured default. Model names use the
+    ``provider/model`` format (e.g. ``github-copilot/claude-opus-4.5``).
+    """
+
+    default_command = ["opencode", "run", "--dangerously-skip-permissions"]
+    default_model = ""  # omit --model; let opencode use its default
+    prompt_flag = None  # opencode takes the prompt as a positional argument
+
+    # Provider assumed when a bare model name has no ``provider/`` prefix. This
+    # matches the ``OPENCODE_TIERS`` defaults (GitHub Copilot); override the
+    # model explicitly with ``provider/model`` for other providers.
+    default_provider = "github-copilot"
+
+    def _normalize_model(self, model: str) -> str:
+        # opencode requires ``provider/model``; a classifier may recommend a bare
+        # model name (e.g. "claude-sonnet-4.6"), so prefix the default provider.
+        if model and "/" not in model:
+            return f"{self.default_provider}/{model}"
+        return model
+
+
+
+def _default_runner(
+    command: list[str], timeout: float, prompt_flag: str | None = "-p"
+) -> PromptRunner:
     def run(prompt: str, cwd: str, model: str | None) -> str:
         if shutil.which(command[0]) is None:
             raise RuntimeError(f"'{command[0]}' not found on PATH")
         cmd = [*command]
         if model:
             cmd += ["--model", model]
+        # Most CLIs take the prompt via a flag (``-p <prompt>``); some (opencode)
+        # take it as a positional argument, signalled by ``prompt_flag=None``.
+        argv = [*cmd, prompt] if prompt_flag is None else [*cmd, prompt_flag, prompt]
         completed = subprocess.run(
-            [*cmd, "-p", prompt],
+            argv,
             cwd=cwd,
             capture_output=True,
             text=True,

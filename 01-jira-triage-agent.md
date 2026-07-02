@@ -23,7 +23,7 @@ workshop launch
 workshop run jiraku
 ```
 
-jiraku runs using Github Copilot CLI as the main agent. Support for additional CLI agents may be planned for the future.
+jiraku runs using a coding-agent CLI as the main agent — GitHub Copilot CLI, Gemini CLI or opencode (selectable per run for both classification and work).
 
 ## Interacting with jiraku
 

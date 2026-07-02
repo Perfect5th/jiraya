@@ -49,6 +49,17 @@ GEMINI_TIERS = ModelTiers(
     auto="",
 )
 
+# opencode model names use a ``provider/model`` format. These defaults assume
+# the GitHub Copilot provider (``opencode auth`` with Copilot); override with
+# ``--classifier-model``/``--work-model`` for other providers. ``auto`` is
+# empty: omit ``--model`` and let opencode use its configured default.
+OPENCODE_TIERS = ModelTiers(
+    fast="github-copilot/gpt-5-mini",
+    standard="github-copilot/claude-sonnet-4.5",
+    deep="github-copilot/claude-opus-4.5",
+    auto="",
+)
+
 # Backwards-compatible module constants (the Copilot tiers).
 FAST_MODEL = COPILOT_TIERS.fast
 STANDARD_MODEL = COPILOT_TIERS.standard

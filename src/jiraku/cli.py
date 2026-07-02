@@ -99,7 +99,7 @@ def _config_from_args(args: argparse.Namespace) -> JirakuConfig:
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--classifier", choices=["keyword", "copilot", "gemini"],
+    parser.add_argument("--classifier", choices=["keyword", "copilot", "gemini", "opencode"],
                         default="keyword", help="Intent classifier to use.")
     parser.add_argument("--source", choices=["auto", "memory", "jira"], default="auto",
                         help="Ticket source. 'auto' uses real Jira when "
@@ -107,16 +107,16 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--interval", type=float, default=1800.0,
                         help="Seconds between poll cycles.")
     parser.add_argument("--classifier-model", default=None,
-                        help="Model for the LLM CLI classifier (copilot/gemini).")
+                        help="Model for the LLM CLI classifier (copilot/gemini/opencode).")
     parser.add_argument("--work-model", default=None,
                         help="Model for the work agent. If unset, each ticket uses "
                              "the model recommended by its classification.")
-    parser.add_argument("--work-agent", choices=["copilot", "gemini"],
+    parser.add_argument("--work-agent", choices=["copilot", "gemini", "opencode"],
                         default="copilot",
                         help="Coding-agent CLI the work agent drives (with --work).")
     parser.add_argument("--copilot-fallback", action="store_true",
                         help="Fall back to the keyword classifier if the LLM "
-                             "classifier (copilot/gemini) is unavailable.")
+                             "classifier (copilot/gemini/opencode) is unavailable.")
     parser.add_argument("--repo-registry", default=None,
                         help="Path to a YAML repo registry (project->repo catalog).")
     parser.add_argument("--learned-rules", default=None,

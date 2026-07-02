@@ -5,3 +5,4 @@ sdks:
   - name: uv
   - name: node
     channel: 24/stable
+  - name: opencode

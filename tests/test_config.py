@@ -146,3 +146,15 @@ def test_cli_work_agent_defaults_to_copilot():
     from jiraku.cli import build_parser, _config_from_args
     args = build_parser().parse_args(["run", "--source", "memory", "--work"])
     assert _config_from_args(args).work_agent == "copilot"
+
+
+def test_cli_parses_opencode_classifier_and_work_agent():
+    from jiraku.cli import build_parser, _config_from_args
+    args = build_parser().parse_args(
+        ["run", "--source", "memory", "--classifier", "opencode",
+         "--work", "--work-agent", "opencode",
+         "--work-model", "github-copilot/claude-opus-4.5"])
+    cfg = _config_from_args(args)
+    assert cfg.classifier == "opencode"
+    assert cfg.work_agent == "opencode"
+    assert cfg.work_model == "github-copilot/claude-opus-4.5"

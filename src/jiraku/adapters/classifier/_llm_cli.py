@@ -53,14 +53,20 @@ class LlmUnavailableError(RuntimeError):
 
 
 def _default_runner(
-    command: list[str], timeout: float, error_cls: type[LlmUnavailableError]
+    command: list[str],
+    timeout: float,
+    error_cls: type[LlmUnavailableError],
+    prompt_flag: str | None = "-p",
 ) -> PromptRunner:
     def run(prompt: str) -> str:
         if shutil.which(command[0]) is None:
             raise error_cls(f"'{command[0]}' not found on PATH")
+        # Most CLIs take the prompt via a flag (``-p <prompt>``); some (opencode)
+        # take it as a positional argument, signalled by ``prompt_flag=None``.
+        argv = [*command, prompt] if prompt_flag is None else [*command, prompt_flag, prompt]
         try:
             completed = subprocess.run(
-                [*command, "-p", prompt],
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -77,13 +83,15 @@ class LlmCliClassifier(Classifier):
     """Classifies tickets by prompting an LLM CLI for a single JSON object.
 
     Subclasses set :attr:`source_name`, :attr:`default_command`,
-    :attr:`model_tiers` and :attr:`error_cls`.
+    :attr:`model_tiers`, :attr:`error_cls` and (if the CLI takes the prompt as a
+    positional argument rather than via ``-p``) :attr:`prompt_flag`.
     """
 
     source_name: str = "llm-cli"
     default_command: list[str] = []
     model_tiers: ModelTiers = COPILOT_TIERS
     error_cls: type[LlmUnavailableError] = LlmUnavailableError
+    prompt_flag: str | None = "-p"  # None => pass the prompt as a positional arg
 
     def __init__(
         self,
@@ -94,13 +102,13 @@ class LlmCliClassifier(Classifier):
         timeout: float = 60.0,
         fallback: Classifier | None = None,
     ) -> None:
-        # ``-p <prompt>`` is appended by the runner, so the prompt always
-        # immediately follows the flag regardless of the rest of the command.
+        # The prompt is appended by the runner (after ``prompt_flag`` if set), so
+        # it always trails the rest of the command.
         self._command = command or list(self.default_command)
         if model:
             self._command = [*self._command, "--model", model]
         self._runner = runner or _default_runner(
-            self._command, timeout, self.error_cls
+            self._command, timeout, self.error_cls, self.prompt_flag
         )
         self._fallback = fallback
 

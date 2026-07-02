@@ -6,6 +6,7 @@ from .readonly import ReadOnlyTicketSource
 from .work_runner import (
     CopilotWorkAgentRunner,
     GeminiWorkAgentRunner,
+    OpencodeWorkAgentRunner,
     NoopWorkAgentRunner,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "ReadOnlyTicketSource",
     "CopilotWorkAgentRunner",
     "GeminiWorkAgentRunner",
+    "OpencodeWorkAgentRunner",
     "NoopWorkAgentRunner",
 ]
